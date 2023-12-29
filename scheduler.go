@@ -13,6 +13,10 @@ import (
 	"github.com/eluv-io/utc-go"
 )
 
+const (
+	defaultMaxWait = time.Millisecond * 20
+)
+
 type Logger = *elog.Log
 
 // Options are options for the Scheduler
@@ -24,10 +28,7 @@ type Options struct {
 
 // OnChannelFull options tell the scheduler what to do when the dispatching channel is full
 type OnChannelFull struct {
-	SkipDispatch bool          // whether to skip dispatching a schedule if channel is full
-	Block        bool          // send blocking if SkipDispatch is false and Block is true
-	RetryAfter   time.Duration // if SkipDispatch is false and Block is false, duration to wait before retry
-	MaxRetries   int           // max retries to dispatch
+	MaxWait time.Duration // max duration to wait for dispatching a schedule
 }
 
 // NewOptions returns default options for the Scheduler.
@@ -35,9 +36,7 @@ func NewOptions() *Options {
 	return &Options{
 		ChannelSize: 1,
 		OnChannelFull: OnChannelFull{
-			SkipDispatch: false,
-			RetryAfter:   time.Millisecond * 10,
-			MaxRetries:   1,
+			MaxWait: defaultMaxWait,
 		},
 	}
 }
@@ -67,8 +66,8 @@ func NewScheduler(opts *Options) *Scheduler {
 	if opts == nil {
 		opts = NewOptions()
 	}
-	if opts.OnChannelFull.RetryAfter < time.Millisecond {
-		opts.OnChannelFull.RetryAfter = time.Millisecond
+	if opts.OnChannelFull.MaxWait <= 0 {
+		opts.OnChannelFull.MaxWait = defaultMaxWait
 	}
 	if opts.Logger == nil {
 		log.Default()
@@ -76,7 +75,7 @@ func NewScheduler(opts *Options) *Scheduler {
 	}
 	return &Scheduler{
 		options:  opts,
-		stop:     make(chan struct{}),
+		stop:     make(chan struct{}, 1),
 		add:      make(chan *Schedule),
 		remove:   make(chan ScheduleID),
 		snapshot: make(chan chan []*Schedule),
@@ -149,6 +148,12 @@ func (s *Scheduler) Dump() []*Schedule {
 	return s.dump()
 }
 
+func (s *Scheduler) Running() bool {
+	s.runningMu.Lock()
+	defer s.runningMu.Unlock()
+	return s.running
+}
+
 // C provides a channel of notifications for planned events
 func (s *Scheduler) C() chan Schedule {
 	return s.ch
@@ -182,7 +187,6 @@ func (s *Scheduler) dumpStop(dump bool) []*Schedule {
 		ret = s.dump()
 	}
 	s.stop <- struct{}{}
-	s.running = false
 	return ret
 }
 
@@ -201,7 +205,7 @@ func (s *Scheduler) now() utc.UTC {
 }
 
 func (s *Scheduler) run(schedules Schedules) error {
-	const longAfter = 100000 * time.Hour
+	const inLongTime = 100000 * time.Hour
 
 	s.runningMu.Lock()
 	if s.running {
@@ -211,9 +215,36 @@ func (s *Scheduler) run(schedules Schedules) error {
 	s.running = true
 	s.runningMu.Unlock()
 
+	dumpSchedules := func(replyChan chan []*Schedule) {
+		entries := make([]*Schedule, 0, len(schedules))
+		for _, e := range schedules {
+			entries = append(entries, e.copy())
+		}
+		sort.Sort(Schedules(entries))
+		replyChan <- entries
+	}
+
+	addEntry := func(entry *Schedule) {
+		now := s.now()
+		entry.start(now)
+		schedules = append(schedules, entry)
+		s.logger.Trace("added", "now", now, "entry", entry.ID(), "next", entry.next)
+	}
+
+	remEntry := func(id ScheduleID) {
+		entries := Schedules(nil)
+		for _, e := range schedules {
+			if e.id != id {
+				entries = append(entries, e)
+			}
+		}
+		schedules = entries
+		s.logger.Trace("removed", "entry", id)
+	}
+
 	go func() {
 		s.logger.Info("start", "schedules", len(schedules))
-		timer := time.NewTimer(longAfter)
+		timer := time.NewTimer(inLongTime)
 		stopTimer := func() {
 			if !timer.Stop() {
 				select {
@@ -238,7 +269,7 @@ func (s *Scheduler) run(schedules Schedules) error {
 
 			if len(schedules) == 0 {
 				// no entries yet, just sleep
-				timer.Reset(longAfter)
+				timer.Reset(inLongTime)
 			} else {
 				timer.Reset(schedules[0].next.Sub(now))
 			}
@@ -248,45 +279,55 @@ func (s *Scheduler) run(schedules Schedules) error {
 				case tc := <-timer.C:
 					now = utc.New(tc)
 					s.logger.Trace("wake", "now", now)
+					breakSchedules := false
 
 					// dispatch entries whose next time is less or equal than now
+					// since dispatch is blocking, other events need to be taken
+					// into account (can potentially block for a long time).
 					for _, entry := range schedules {
-						if entry.next.After(now) {
+						if entry.next.After(now) || breakSchedules {
 							break
 						}
 						// update schedule & allow calling RescheduleAt
 						entry.dispatching(s.now(), s)
-
 						dispatched := false
-						if !s.options.OnChannelFull.SkipDispatch && s.options.OnChannelFull.Block {
-							// dispatch blocking
-							s.ch <- entry.dispatchValue()
-							entry.dispatched()
-							dispatched = true
-						} else {
-							// dispatch non blocking
-							retries := 0
-							for {
-								select {
-								case s.ch <- entry.dispatchValue():
-									entry.dispatched()
-									dispatched = true
-								default:
-									// channel full
-									switch s.options.OnChannelFull.SkipDispatch {
-									case true:
-										// just ignore and go ahead
-									case false:
-										if retries < s.options.OnChannelFull.MaxRetries {
-											time.Sleep(s.options.OnChannelFull.RetryAfter)
-											retries++
-											continue
-										}
-									}
+
+						dispatchTimer := time.NewTimer(s.options.OnChannelFull.MaxWait)
+						s.logger.Trace("dispatching", entry.ID())
+						for {
+							select {
+							case s.ch <- entry.dispatchValue():
+								entry.dispatched()
+								dispatched = true
+								if !dispatchTimer.Stop() {
+									<-dispatchTimer.C
 								}
-								break
+							case entry := <-s.add:
+								addEntry(entry)
+								breakSchedules = true
+								continue
+							case id := <-s.remove:
+								if id != entry.id {
+									remEntry(id)
+									breakSchedules = true
+									continue
+								}
+							case replyChan := <-s.snapshot:
+								dumpSchedules(replyChan)
+								continue
+							case <-s.stop:
+								// send back to stop
+								s.stop <- struct{}{}
+								if !dispatchTimer.Stop() {
+									<-dispatchTimer.C
+								}
+								breakSchedules = true
+							case <-dispatchTimer.C:
+								// give up
 							}
+							break
 						}
+
 						schedules = schedules[1:]
 						if entry.nextTime(now) {
 							schedules = append(schedules, entry)
@@ -297,35 +338,25 @@ func (s *Scheduler) run(schedules Schedules) error {
 					}
 
 				case entry := <-s.add:
-					now = s.now()
-					entry.start(now)
-					schedules = append(schedules, entry)
-					s.logger.Trace("added", "now", now, "entry", entry.ID(), "next", entry.next)
+					addEntry(entry)
+
+				case id := <-s.remove:
+					remEntry(id)
 
 				case replyChan := <-s.snapshot:
-					entries := make([]*Schedule, 0, len(schedules))
-					for _, e := range schedules {
-						entries = append(entries, e.copy())
-					}
-					replyChan <- entries
+					dumpSchedules(replyChan)
 					continue
 
 				case <-s.stop:
 					stopTimer()
 
+					s.runningMu.Lock()
+					s.running = false
+					s.runningMu.Unlock()
+
 					close(s.ch)
 					s.logger.Info("stop")
 					return
-
-				case id := <-s.remove:
-					entries := Schedules(nil)
-					for _, e := range schedules {
-						if e.id != id {
-							entries = append(entries, e)
-						}
-					}
-					schedules = entries
-					s.logger.Trace("removed", "entry", id)
 				}
 
 				break

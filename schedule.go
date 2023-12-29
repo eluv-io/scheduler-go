@@ -12,7 +12,8 @@ import (
 // ScheduleID is the ID of a Schedule
 type ScheduleID string
 
-// NewSchedule returns a new initialized Schedule or an error if incompatible options are used
+// NewSchedule returns a new initialized Schedule or an error if incompatible options are used.
+// The provided options must set the next scheduled time (e.g. through an Occur or a Recur option)
 func NewSchedule(id string, o interface{}, opts ...ScheduleOpt) (*Schedule, error) {
 	ret := &Schedule{
 		id:     ScheduleID(id),
@@ -120,7 +121,10 @@ func (s *Schedule) dispatched() {
 }
 
 func (s *Schedule) String() string {
-	return fmt.Sprintf("schedule[id: %s, at: %v, dat: %v]", s.id, s.details.ScheduledAt, s.details.DispatchedAt)
+	return fmt.Sprintf("schedule[id: %s, at: %v, dat: %v, next: %v]", s.id,
+		s.details.ScheduledAt,
+		s.details.DispatchedAt,
+		s.next)
 }
 
 func (s *Schedule) same(o *Schedule) bool {

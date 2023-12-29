@@ -80,7 +80,7 @@ if [[ "${run_reg}" == "true" ]]; then
     echo "running regular tests"
 
     ret=0
-    go test ${debug_flags} $flags -tags "$tags" $short -count=1 ./... 2>&1 |
+    go test ${debug_flags} -timeout 3m $flags -tags "$tags" $short -count=1 ./... 2>&1 |
         tee "$out" |
         grep -av "?.*\[no test files\]"
     if [[ ${PIPESTATUS[0]} != 0 ]]; then

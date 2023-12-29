@@ -36,7 +36,7 @@ func ExampleNew() {
 
 	in := time.Millisecond * 200
 	sched.At(utc.Now().Add(in), func() { fmt.Println("fired") })
-	time.Sleep(in)
+	time.Sleep(time.Millisecond * 205)
 
 	_ = sched.Stop()
 	wg.Wait()

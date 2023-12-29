@@ -45,17 +45,16 @@ Once the scheduler is running, schedules can be added or removed. The scheduler 
 ### Options
 
 The default scheduler (using `New`) is initialized with a buffered channel of size 1 and configured such that if the 
-receiver is slow handling schedules and the buffer is full, the scheduler won't skip the schedule and will retry once 
-after 10ms.
+receiver is slow handling schedules and the buffer is full, the scheduler waits at most 20 millis before giving up.
 
 These options are configurable through `Options` passed to function `NewScheduler`. <br/>
-Below an `Options` example with a zero channel size and skipping schedules when the channel is full:
+Below an `Options` example with a zero channel size and skipping schedules after 1 millisecond when the channel is full:
 
 ```
 	return &Options{
 		ChannelSize: 0,
 		OnChannelFull: OnChannelFull{
-			SkipDispatch: true,
+		    MaxWait: time.Millisecond,
 		},
 	}
 ```
