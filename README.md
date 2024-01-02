@@ -59,6 +59,21 @@ Below an `Options` example with a zero channel size and skipping schedules after
 	}
 ```
 
+For cases of processes where the monotonic clock may stop, but the system clock continues, eg. when a VM is paused or a laptop hibernated,
+options may include a `ClockHealth` attribute. 
+When enabled the clock skew is checked every `PollPeriod` and when the clock skew exceeds `MaxClockSkew`, the scheduler recomputes the delay
+to fire the next reschedule.
+
+```
+                ...
+	        ClockHealth: ClockHealth{
+		        Enabled:      true,
+		        MaxClockSkew: time.Second * 3,
+		        PollPeriod:   time.Second,
+	        },
+```
+
+
 ### Schedules
 
 The scheduler has helper functions to add simple schedules: 

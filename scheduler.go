@@ -21,9 +21,10 @@ type Logger = *elog.Log
 
 // Options are options for the Scheduler
 type Options struct {
-	ChannelSize   uint
-	Logger        Logger
-	OnChannelFull OnChannelFull
+	ChannelSize   uint          // size of the notification channel
+	Logger        Logger        // internal logger
+	OnChannelFull OnChannelFull // what to do when the channel is full
+	ClockHealth   ClockHealth   // check the system clock is in sync with the monotonic clock
 }
 
 // OnChannelFull options tell the scheduler what to do when the dispatching channel is full
@@ -44,6 +45,7 @@ func NewOptions() *Options {
 // Scheduler represents a sequence of planned events which are notified through channel C().
 type Scheduler struct {
 	options   *Options
+	reset     chan struct{}
 	stop      chan struct{}
 	add       chan *Schedule
 	remove    chan ScheduleID
@@ -75,6 +77,7 @@ func NewScheduler(opts *Options) *Scheduler {
 	}
 	return &Scheduler{
 		options:  opts,
+		reset:    make(chan struct{}),
 		stop:     make(chan struct{}, 1),
 		add:      make(chan *Schedule),
 		remove:   make(chan ScheduleID),
@@ -201,7 +204,7 @@ func (s *Scheduler) Run(schedules []*Schedule) error {
 }
 
 func (s *Scheduler) now() utc.UTC {
-	return utc.Now()
+	return utc.Now().Round(0) // use the wall clock
 }
 
 func (s *Scheduler) run(schedules Schedules) error {
@@ -242,6 +245,12 @@ func (s *Scheduler) run(schedules Schedules) error {
 		s.logger.Trace("removed", "entry", id)
 	}
 
+	var clockHealth *clockHealth
+	if s.options.ClockHealth.Enabled {
+		clockHealth = newClockHealth(s, s.options.ClockHealth)
+		clockHealth.run()
+	}
+
 	go func() {
 		s.logger.Info("start", "schedules", len(schedules))
 		timer := time.NewTimer(inLongTime)
@@ -267,17 +276,24 @@ func (s *Scheduler) run(schedules Schedules) error {
 			now = s.now()
 			sort.Sort(schedules)
 
-			if len(schedules) == 0 {
-				// no entries yet, just sleep
-				timer.Reset(inLongTime)
-			} else {
-				timer.Reset(schedules[0].next.Sub(now))
+			in := inLongTime // just sleep when no entries yet
+			id := "-"
+			if len(schedules) > 0 {
+				in = schedules[0].next.Sub(now)
+				id = string(schedules[0].id)
 			}
+			s.logger.Trace("next schedule", "id", id,
+				"now", now,
+				"in", in,
+				"next", now.Add(in))
+			timer.Reset(in)
 
 			for {
 				select {
+				case <-s.reset:
+					// do nothing, just reset timer
 				case tc := <-timer.C:
-					now = utc.New(tc)
+					now = utc.New(tc).Round(0)
 					s.logger.Trace("wake", "now", now)
 					breakSchedules := false
 
@@ -293,7 +309,7 @@ func (s *Scheduler) run(schedules Schedules) error {
 						dispatched := false
 
 						dispatchTimer := time.NewTimer(s.options.OnChannelFull.MaxWait)
-						s.logger.Trace("dispatching", entry.ID())
+						s.logger.Trace("dispatching", "id", entry.ID())
 						for {
 							select {
 							case s.ch <- entry.dispatchValue():
@@ -355,6 +371,9 @@ func (s *Scheduler) run(schedules Schedules) error {
 					s.runningMu.Unlock()
 
 					close(s.ch)
+					if clockHealth != nil {
+						clockHealth.halt()
+					}
 					s.logger.Info("stop")
 					return
 				}
