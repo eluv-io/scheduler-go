@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -286,13 +287,19 @@ func TestReschedule(t *testing.T) {
 
 	receiver := NewSimpleReceiver(sc.C())
 	receiver.run(func(s Schedule) {
+		if len(receiver.received) > 1 {
+			require.NotEmpty(t, s.Str())
+			c, err := strconv.Atoi(s.Str())
+			require.NoError(t, err)
+			require.Equal(t, len(receiver.received)-1, c)
+		}
 		if len(receiver.received) == 3 {
 			scheds, err := sc.DumpStop()
 			require.NoError(t, err)
 			require.Equal(t, 0, len(scheds))
 			return
 		}
-		s.RescheduleAt(utc.Now().Add(delay))
+		s.RescheduleAt(utc.Now().Add(delay), fmt.Sprintf("%d", len(receiver.received)))
 	})
 
 	err := sc.Run(schedules)

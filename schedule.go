@@ -194,19 +194,30 @@ func (s *Schedule) FnE() func() error {
 	return nil
 }
 
-// RescheduleAt reschedules the schedule at the given date. The function returns
-// false if the schedule was built via a Recur option or if the schedule was not
-// dispatched by the scheduler. Returns true if the schedule was sent to the scheduler.
-func (s *Schedule) RescheduleAt(t utc.UTC) bool {
+func (s *Schedule) canReschedule(at string) bool {
 	if s.scheduler == nil {
 		return false
 	}
 	if s.nexter != nil {
-		s.scheduler.logger.Warn("already rescheduled by 'nexter'", "entry", s.ID(), "next", s.next)
+		s.scheduler.logger.Warn(fmt.Sprintf("'%s': already rescheduled by 'nexter'", at),
+			"entry", s.ID(), "next", s.next)
+		return false
+	}
+	return true
+}
+
+// RescheduleAt reschedules the schedule at the given date. The function returns
+// false if the schedule was built via a Recur option or if the schedule was not
+// dispatched by the scheduler. Returns true if the schedule was sent to the scheduler.
+func (s *Schedule) RescheduleAt(t utc.UTC, o ...interface{}) bool {
+	if !s.canReschedule("at") {
 		return false
 	}
 	s.details.RescheduledCount++
 	s.next = t
+	if len(o) > 0 {
+		s.object = o[0]
+	}
 	return s.scheduler.Add(s)
 }
 
@@ -215,16 +226,15 @@ func (s *Schedule) RescheduleAt(t utc.UTC) bool {
 // The function returns false if the schedule was built via a Recur option or if
 // the schedule was not dispatched by the scheduler. Returns true if the schedule
 // was sent to the scheduler.
-func (s *Schedule) RescheduleIn(d time.Duration) bool {
-	if s.scheduler == nil {
-		return false
-	}
-	if s.nexter != nil {
-		s.scheduler.logger.Warn("already rescheduled by 'nexter'", "entry", s.ID(), "next", s.next)
+func (s *Schedule) RescheduleIn(d time.Duration, o ...interface{}) bool {
+	if !s.canReschedule("in") {
 		return false
 	}
 	s.details.RescheduledCount++
 	s.next = s.scheduler.now().Add(d)
+	if len(o) > 0 {
+		s.object = o[0]
+	}
 	return s.scheduler.Add(s)
 }
 
