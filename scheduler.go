@@ -4,6 +4,7 @@ import (
 	"log"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -52,8 +53,10 @@ type Scheduler struct {
 	snapshot  chan chan []*Schedule
 	running   bool
 	runningMu sync.Mutex
+	outlet    []*Schedule
+	outletMu  sync.Mutex
 
-	ch     chan Schedule
+	ch     chan Entry
 	logger Logger
 }
 
@@ -82,7 +85,7 @@ func NewScheduler(opts *Options) *Scheduler {
 		add:      make(chan *Schedule),
 		remove:   make(chan ScheduleID),
 		snapshot: make(chan chan []*Schedule),
-		ch:       make(chan Schedule, opts.ChannelSize),
+		ch:       make(chan Entry, opts.ChannelSize),
 		logger:   opts.Logger,
 	}
 }
@@ -93,6 +96,7 @@ func (s *Scheduler) At(at utc.UTC, o interface{}) ScheduleID {
 	id := ScheduleID(uuid.NewString())
 	s.Add(&Schedule{
 		id:     id,
+		state:  &atomic.Int64{},
 		next:   at,
 		object: o,
 	})
@@ -105,6 +109,7 @@ func (s *Scheduler) In(d time.Duration, o interface{}) ScheduleID {
 	id := ScheduleID(uuid.NewString())
 	s.Add(&Schedule{
 		id:      id,
+		state:   &atomic.Int64{},
 		starter: NexterFn(func(now utc.UTC, _ *Schedule) utc.UTC { return now.Add(d) }),
 		object:  o,
 	})
@@ -158,7 +163,7 @@ func (s *Scheduler) Running() bool {
 }
 
 // C provides a channel of notifications for planned events
-func (s *Scheduler) C() chan Schedule {
+func (s *Scheduler) C() chan Entry {
 	return s.ch
 }
 
@@ -201,6 +206,22 @@ func (s *Scheduler) Start() error {
 // Run starts the scheduler with the given initial Schedule instances
 func (s *Scheduler) Run(schedules []*Schedule) error {
 	return s.run(schedules)
+}
+
+// Outlet returns the schedules that could not be dispatched because the channel was full
+func (s *Scheduler) Outlet() []*Schedule {
+	s.outletMu.Lock()
+	defer s.outletMu.Unlock()
+	ret := s.outlet
+	s.outlet = nil
+	return ret
+}
+
+func (s *Scheduler) overflowed(entry *Schedule) {
+	s.outletMu.Lock()
+	defer s.outletMu.Unlock()
+	entry.dispatchTimedOut()
+	s.outlet = append(s.outlet, entry)
 }
 
 func (s *Scheduler) now() utc.UTC {
@@ -304,44 +325,58 @@ func (s *Scheduler) run(schedules Schedules) error {
 						if entry.next.After(now) || breakSchedules {
 							break
 						}
-						// update schedule & allow calling RescheduleAt
-						entry.dispatching(s.now(), s)
 						dispatched := false
+						switch entry.getState() {
+						case scDispatched:
+							// entry is still in 'dispatched' state because it was not delivered
+							// which may happen for recurrent entries that were dispatched and
+							// rescheduled but the executor side did not handle the entry yet due
+							// to being busy with some other earlier entry.
+							dispatched = true
+							s.logger.Trace("run: skipping dispatched entry", "schedule_at", now, "entry", entry.ID())
+						default:
+							// update schedule & allow calling RescheduleAt
+							entry.dispatching(s.now(), s)
 
-						dispatchTimer := time.NewTimer(s.options.OnChannelFull.MaxWait)
-						s.logger.Trace("dispatching", "id", entry.ID())
-						for {
-							select {
-							case s.ch <- entry.dispatchValue():
-								entry.dispatched()
-								dispatched = true
-								if !dispatchTimer.Stop() {
-									<-dispatchTimer.C
-								}
-							case entry := <-s.add:
-								addEntry(entry)
-								breakSchedules = true
-								continue
-							case id := <-s.remove:
-								if id != entry.id {
-									remEntry(id)
+							dispatchTimer := time.NewTimer(s.options.OnChannelFull.MaxWait)
+							s.logger.Trace("dispatching", "id", entry.ID())
+							for {
+								select {
+								case s.ch <- entry.dispatchValue():
+									entry.dispatched()
+									dispatched = true
+									if !dispatchTimer.Stop() {
+										<-dispatchTimer.C
+									}
+								case entry := <-s.add:
+									addEntry(entry)
 									breakSchedules = true
 									continue
+								case id := <-s.remove:
+									if id != entry.id {
+										remEntry(id)
+										breakSchedules = true
+										continue
+									}
+								case replyChan := <-s.snapshot:
+									dumpSchedules(replyChan)
+									continue
+								case <-s.stop:
+									// send back to stop
+									s.stop <- struct{}{}
+									if !dispatchTimer.Stop() {
+										<-dispatchTimer.C
+									}
+									breakSchedules = true
+								case <-dispatchTimer.C:
+									// give up
 								}
-							case replyChan := <-s.snapshot:
-								dumpSchedules(replyChan)
-								continue
-							case <-s.stop:
-								// send back to stop
-								s.stop <- struct{}{}
-								if !dispatchTimer.Stop() {
-									<-dispatchTimer.C
-								}
-								breakSchedules = true
-							case <-dispatchTimer.C:
-								// give up
+								break
 							}
-							break
+						}
+
+						if !dispatched {
+							s.overflowed(entry)
 						}
 
 						schedules = schedules[1:]
@@ -349,7 +384,11 @@ func (s *Scheduler) run(schedules Schedules) error {
 							schedules = append(schedules, entry)
 							s.logger.Trace("run", "schedule_at", now, "entry", entry.ID(), "dispatched", dispatched, "next", entry.next)
 						} else {
-							s.logger.Trace("run", "schedule_at", now, "entry", entry.ID(), "dispatched", dispatched)
+							if dispatched {
+								s.logger.Trace("run", "schedule_at", now, "entry", entry.ID(), "dispatched", dispatched)
+							} else {
+								s.logger.Warn("run", "schedule_at", now, "entry", entry.ID(), "dispatched", dispatched)
+							}
 						}
 					}
 

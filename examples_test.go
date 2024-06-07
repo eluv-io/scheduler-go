@@ -22,10 +22,11 @@ func ExampleNew() {
 		//}
 		for {
 			select {
-			case s, ok := <-sched.C():
+			case entry, ok := <-sched.C():
 				if !ok {
 					return
 				}
+				s := entry.S()
 				// do something with the schedule
 				// potentially in a goroutine
 				// go func(s scheduler.Schedule) { s.Fn()() }(s)

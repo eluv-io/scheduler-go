@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,8 +24,9 @@ func TestScheduleStart(t *testing.T) {
 			descr: "at",
 			opts:  []ScheduleOpt{Occur.At(u)},
 			want: &Schedule{
-				id:   "at",
-				next: u,
+				id:    "at",
+				state: &atomic.Int64{},
+				next:  u,
 			},
 		},
 		{
@@ -32,8 +34,9 @@ func TestScheduleStart(t *testing.T) {
 			opts:  []ScheduleOpt{Occur.In(time.Hour)},
 			fn:    func(s *Schedule) { s.start(u) },
 			want: &Schedule{
-				id:   "in",
-				next: u.Add(time.Hour),
+				id:    "in",
+				state: &atomic.Int64{},
+				next:  u.Add(time.Hour),
 			},
 		},
 		{
@@ -41,8 +44,9 @@ func TestScheduleStart(t *testing.T) {
 			opts:  []ScheduleOpt{Recur.Every(time.Hour)},
 			fn:    func(s *Schedule) { s.start(u) },
 			want: &Schedule{
-				id:   "every",
-				next: u.Add(time.Hour),
+				id:    "every",
+				state: &atomic.Int64{},
+				next:  u.Add(time.Hour),
 			},
 		},
 	} {
