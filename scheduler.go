@@ -52,6 +52,8 @@ type Scheduler struct {
 	snapshot  chan chan []*Schedule
 	running   bool
 	runningMu sync.Mutex
+	outlet    []*Schedule
+	outletMu  sync.Mutex
 
 	ch     chan Schedule
 	logger Logger
@@ -203,6 +205,21 @@ func (s *Scheduler) Run(schedules []*Schedule) error {
 	return s.run(schedules)
 }
 
+// Outlet returns the schedules that could not be dispatched because the channel was full
+func (s *Scheduler) Outlet() []*Schedule {
+	s.outletMu.Lock()
+	defer s.outletMu.Unlock()
+	ret := s.outlet
+	s.outlet = nil
+	return ret
+}
+
+func (s *Scheduler) overflowed(entry *Schedule) {
+	s.outletMu.Lock()
+	defer s.outletMu.Unlock()
+	s.outlet = append(s.outlet, entry)
+}
+
 func (s *Scheduler) now() utc.UTC {
 	return utc.Now().Round(0) // use the wall clock
 }
@@ -309,7 +326,7 @@ func (s *Scheduler) run(schedules Schedules) error {
 						dispatched := false
 
 						dispatchTimer := time.NewTimer(s.options.OnChannelFull.MaxWait)
-						s.logger.Trace("dispatching", "id", entry.ID())
+						s.logger.Trace("run - dispatching", "id", entry.ID())
 						for {
 							select {
 							case s.ch <- entry.dispatchValue():
@@ -344,12 +361,20 @@ func (s *Scheduler) run(schedules Schedules) error {
 							break
 						}
 
+						if !dispatched {
+							s.overflowed(entry)
+						}
+
 						schedules = schedules[1:]
 						if entry.nextTime(now) {
 							schedules = append(schedules, entry)
-							s.logger.Trace("run", "schedule_at", now, "entry", entry.ID(), "dispatched", dispatched, "next", entry.next)
+							s.logger.Trace("run - reschedule", "schedule_at", now, "id", entry.ID(), "dispatched", dispatched, "next", entry.next)
 						} else {
-							s.logger.Trace("run", "schedule_at", now, "entry", entry.ID(), "dispatched", dispatched)
+							if dispatched {
+								s.logger.Trace("run - done", "schedule_at", now, "id", entry.ID(), "dispatched", dispatched)
+							} else {
+								s.logger.Warn("run - dispatch failed", "schedule_at", now, "id", entry.ID(), "dispatched", dispatched)
+							}
 						}
 					}
 
