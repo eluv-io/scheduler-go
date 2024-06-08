@@ -26,7 +26,7 @@ func TestOccur(t *testing.T) {
 	}
 
 	receiver := NewSimpleReceiver(sc.C())
-	receiver.run(func(Schedule) {
+	receiver.run(func(*Schedule) {
 		if len(receiver.received) == len(schedules) {
 			scheds, err := sc.DumpStop()
 			require.NoError(t, err)
@@ -46,7 +46,7 @@ func TestAdd(t *testing.T) {
 	sc := New()
 
 	receiver := NewSimpleReceiver(sc.C())
-	receiver.run(func(Schedule) {
+	receiver.run(func(*Schedule) {
 		if len(receiver.received) == 3 {
 			scheds, err := sc.DumpStop()
 			require.NoError(t, err)
@@ -92,7 +92,7 @@ func TestRecur(t *testing.T) {
 	}
 
 	receiver := NewSimpleReceiver(sc.C())
-	receiver.run(func(s Schedule) {
+	receiver.run(func(s *Schedule) {
 		sc.logger.Info("<-", "id", s.ID())
 		if len(receiver.received) == len(schedules)*3 {
 			scheds, err := sc.DumpStop()
@@ -136,7 +136,7 @@ func TestCronEverySecondUntil(t *testing.T) {
 	}
 
 	receiver := NewSimpleReceiver(sc.C())
-	receiver.run(func(s Schedule) {
+	receiver.run(func(s *Schedule) {
 		sc.logger.Info("<-", "id", s.ID())
 		if len(receiver.received) == 6 {
 			scheds, err := sc.DumpStop()
@@ -180,7 +180,7 @@ func TestDispatchChannelFull(t *testing.T) {
 			}
 
 			receiver := NewSimpleReceiver(sc.C())
-			receiver.run(func(s Schedule) {
+			receiver.run(func(s *Schedule) {
 				if len(receiver.received) == 1 {
 					// pause receiving after the first one received
 					time.Sleep(time.Millisecond * 15)
@@ -225,7 +225,7 @@ func TestDispatchBlocking(t *testing.T) {
 	}
 
 	receiver := NewSimpleReceiver(sc.C())
-	receiver.run(func(s Schedule) {
+	receiver.run(func(s *Schedule) {
 		time.Sleep(time.Millisecond)
 		if s.ID() == "3" {
 			scheds, err := sc.DumpStop()
@@ -286,7 +286,7 @@ func TestReschedule(t *testing.T) {
 	}
 
 	receiver := NewSimpleReceiver(sc.C())
-	receiver.run(func(s Schedule) {
+	receiver.run(func(s *Schedule) {
 		if len(receiver.received) > 1 {
 			require.NotEmpty(t, s.Str())
 			c, err := strconv.Atoi(s.Str())
@@ -472,22 +472,23 @@ func TestAddRemoveWhileDispatching(t *testing.T) {
 }
 
 type SimpleReceiver struct {
-	c        chan Schedule
+	c        chan Entry
 	wg       sync.WaitGroup
-	received []Schedule
+	received []*Schedule
 }
 
-func NewSimpleReceiver(sc chan Schedule) *SimpleReceiver {
+func NewSimpleReceiver(sc chan Entry) *SimpleReceiver {
 	return &SimpleReceiver{
 		c: sc,
 	}
 }
 
-func (s *SimpleReceiver) run(callbackFn func(s Schedule)) {
+func (s *SimpleReceiver) run(callbackFn func(s *Schedule)) {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		for e := range s.c {
+		for entry := range s.c {
+			e := entry.S()
 			s.received = append(s.received, e)
 			if callbackFn != nil {
 				callbackFn(e)

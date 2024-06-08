@@ -5,7 +5,7 @@
 </p>
 
 `scheduler` represents sequence(s) of planned events or `schedules` dispatched on the scheduler's notification channel C. <br/>
-When a Schedule's time expires, the schedule is sent on C.
+When a Schedule's time expires, the schedule is sent as an `Entry` on C.
 
 ### Sample Usage
 
@@ -19,10 +19,11 @@ When a Schedule's time expires, the schedule is sent on C.
 		for {
 			select {
 			
-			case s, ok := <-sched.C():
+			case entry, ok := <-sched.C():
 				if !ok {
 					return
 				}
+				s := entry.S()
 				// do something with the schedule
 				// potentially in a goroutine
 				// go func(s scheduler.Schedule) { s.Fn()() }(s)

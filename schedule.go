@@ -3,6 +3,7 @@ package scheduler
 import (
 	"fmt"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	"github.com/eluv-io/errors-go"
@@ -12,13 +13,19 @@ import (
 // ScheduleID is the ID of a Schedule
 type ScheduleID string
 
+type Entry interface {
+	S() *Schedule
+}
+
 // NewSchedule returns a new initialized Schedule or an error if incompatible options are used.
 // The provided options must set the next scheduled time (e.g. through an Occur or a Recur option)
 func NewSchedule(id string, o interface{}, opts ...ScheduleOpt) (*Schedule, error) {
 	ret := &Schedule{
 		id:     ScheduleID(id),
+		state:  &atomic.Int64{},
 		object: o,
 	}
+	ret.state.Store(int64(scInit))
 	var err error
 	for _, opt := range opts {
 		err = errors.Append(err, opt(ret))
@@ -42,9 +49,20 @@ func MustSchedule(id string, o interface{}, opts ...ScheduleOpt) *Schedule {
 	return ret
 }
 
+type scheduleState int64
+
+const (
+	scInit scheduleState = iota
+	scDispatching
+	scDispatched
+	scDelivered
+	scDispatchTimedOut
+)
+
 // Schedule is a planned event.
 type Schedule struct {
 	id          ScheduleID    // ID of the schedule
+	state       *atomic.Int64 // state of the schedule
 	next        utc.UTC       // next time this Schedule must be notified
 	starter     Nexter        // computing 'next' for the first time
 	object      interface{}   // the associated 'thing' that is scheduled
@@ -64,6 +82,19 @@ type Details struct {
 	RescheduledCount int     `json:"rescheduled_count,omitempty"` // how many times the schedule was re-scheduled
 }
 
+func (s *Schedule) S() *Schedule {
+	s.setState(scDelivered)
+	return s
+}
+
+func (s *Schedule) getState() scheduleState {
+	return scheduleState(s.state.Load())
+}
+
+func (s *Schedule) setState(state scheduleState) {
+	s.state.Store(int64(state))
+}
+
 func (s *Schedule) start(now utc.UTC) {
 	if s.next.IsZero() && s.starter != nil {
 		s.next = s.starter.Next(now, s)
@@ -73,8 +104,7 @@ func (s *Schedule) start(now utc.UTC) {
 	}
 }
 
-// nextTime returns the next utc time after now at which the schedule must be fired and true
-// or utc.Zero and false if the Schedule must not be reschedules by the scheduler.
+// nextTime returns true if the Schedule must be rescheduled by the scheduler.
 func (s *Schedule) nextTime(now utc.UTC) bool {
 	if s.nexter == nil {
 		s.next = utc.Zero
@@ -108,16 +138,24 @@ func (s *Schedule) dispatching(now utc.UTC, sc *Scheduler) {
 	}
 	s.details.DispatchedAt = now
 	s.scheduler = sc
+	s.setState(scDispatching)
 }
 
-func (s *Schedule) dispatchValue() Schedule {
-	ret := *s
-	ret.details.DispatchedCount++
-	return ret
+func (s *Schedule) dispatchValue() *Schedule {
+	// first impl was dispatching Schedule (not *Schedule)
+	//ret := *s
+	//ret.details.DispatchedCount++
+	return s
 }
 
 func (s *Schedule) dispatched() {
+	// use CAS because the other side may have already updated the schedule to 'delivered'
+	s.state.CompareAndSwap(int64(scDispatching), int64(scDispatched))
 	s.details.DispatchedCount++
+}
+
+func (s *Schedule) dispatchTimedOut() {
+	s.setState(scDispatchTimedOut)
 }
 
 func (s *Schedule) String() string {
@@ -138,8 +176,11 @@ func (s *Schedule) same(o *Schedule) bool {
 }
 
 func (s *Schedule) copy() *Schedule {
+	state := &atomic.Int64{}
+	state.Store(int64(s.getState()))
 	return &Schedule{
 		id:          s.id,
+		state:       state,
 		next:        s.next,
 		object:      s.object,
 		maxCount:    s.maxCount,
