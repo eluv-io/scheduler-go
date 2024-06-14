@@ -5,6 +5,7 @@ import (
 	"sort"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/eluv-io/errors-go"
 	"github.com/eluv-io/utc-go"
@@ -53,6 +54,7 @@ type scheduleState int64
 
 const (
 	scInit scheduleState = iota
+	scScheduled
 	scDispatching
 	scDispatched
 	scDelivered
@@ -142,7 +144,7 @@ func (s *Schedule) dispatching(now utc.UTC, sc *Scheduler) {
 }
 
 func (s *Schedule) dispatchValue() *Schedule {
-	// first impl was dispatching Schedule (not *Schedule)
+	// first version of implementation was dispatching Schedule (not *Schedule)
 	//ret := *s
 	//ret.details.DispatchedCount++
 	return s
@@ -244,6 +246,10 @@ func (s *Schedule) canReschedule(at string) bool {
 			"entry", s.ID(), "next", s.next)
 		return false
 	}
+	if s.getState() == scScheduled {
+		// prevent multiple scheduling
+		return false
+	}
 	return true
 }
 
@@ -296,4 +302,24 @@ func (s Schedules) Less(i, j int) bool {
 
 func (s Schedules) Swap(i, j int) {
 	s[i], s[j] = s[j], s[i]
+}
+
+func (s Schedules) copyNoDup() (Schedules, error) {
+	ret := make(Schedules, 0, len(s))
+	ex := make(map[uintptr]*Schedule)
+	for _, sc := range s {
+		if sc == nil {
+			return nil, errors.E("copyNoDup", errors.K.Invalid,
+				"reason", "nil schedule")
+		}
+		ptr := uintptr(unsafe.Pointer(sc))
+		if ex[ptr] != nil {
+			return nil, errors.E("copyNoDup", errors.K.Invalid,
+				"reason", "duplicate schedule",
+				"schedule", sc.id)
+		}
+		ex[ptr] = sc
+		ret = append(ret, sc)
+	}
+	return ret, nil
 }

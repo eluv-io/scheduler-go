@@ -177,3 +177,26 @@ func TestScheduleErrors(t *testing.T) {
 		require.Error(t, err, tc.descr)
 	}
 }
+
+func TestSchedulesDedup(t *testing.T) {
+	a1 := MustSchedule("a", nil, Occur.In(time.Second))
+	b1 := MustSchedule("b", nil, Occur.In(time.Second))
+	a2 := MustSchedule("a", nil, Occur.In(time.Second))
+
+	s1 := Schedules{a1, b1, a2}
+	s2, err := s1.copyNoDup()
+	require.NoError(t, err)
+	require.Equal(t, 3, len(s2))
+	require.Equal(t, ScheduleID("a"), s2[0].id)
+	require.Equal(t, ScheduleID("b"), s2[1].id)
+	require.Equal(t, ScheduleID("a"), s2[0].id)
+
+	s1 = Schedules{a1, b1, a1}
+	s2, err = s1.copyNoDup()
+	require.Error(t, err)
+
+	s1 = Schedules{a1, b1, nil}
+	s2, err = s1.copyNoDup()
+	require.Error(t, err)
+
+}

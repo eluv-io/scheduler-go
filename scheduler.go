@@ -119,11 +119,19 @@ func (s *Scheduler) In(d time.Duration, o interface{}) ScheduleID {
 // Add adds the given schedule to the scheduler.
 // Returns false if the scheduler is not running.
 func (s *Scheduler) Add(sc *Schedule) bool {
+	if sc == nil {
+		return false
+	}
+	
 	s.runningMu.Lock()
 	defer s.runningMu.Unlock()
 	if !s.running {
 		return false
 	}
+	if sc.getState() == scScheduled {
+		return false
+	}
+	sc.setState(scScheduled)
 	s.add <- sc
 	return true
 }
@@ -239,6 +247,15 @@ func (s *Scheduler) run(schedules Schedules) error {
 	s.running = true
 	s.runningMu.Unlock()
 
+	// copy and dedup schedules
+	{
+		var err error
+		schedules, err = schedules.copyNoDup()
+		if err != nil {
+			return err
+		}
+	}
+
 	dumpSchedules := func(replyChan chan []*Schedule) {
 		entries := make([]*Schedule, 0, len(schedules))
 		for _, e := range schedules {
@@ -263,7 +280,7 @@ func (s *Scheduler) run(schedules Schedules) error {
 			}
 		}
 		schedules = entries
-		s.logger.Trace("removed", "entry", id)
+		s.logger.Trace("removed", "id", id)
 	}
 
 	var clockHealth *clockHealth
