@@ -115,6 +115,11 @@ Note that a `Nexter` can also be built around [cronexpr](https://github.com/anga
 The first date of a recurring schedule is computed via the recurring option when the scheduler receives the schedule 
 unless an initial date was given via an `Occur` option. 
 
+**note**: when a schedule is recurrent, the scheduler dispatches it to the channel, then computes the next occurrence and 
+plans it. However, if the receiver is slow in handling schedules and the schedule is still in the buffer of the channel,
+the schedule in **not** dispatched and the next occurrence is computed and planned. 
+This ensures that slow receivers won't lead to overflowing the channel with unhandled schedules.
+
 #### Limiting recurrent schedules
 
 `scheduler.Until` options provide conditions to tell the scheduler to stop rescheduling schedules built via a `Recur` option:

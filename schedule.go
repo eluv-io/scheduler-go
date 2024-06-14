@@ -161,6 +161,11 @@ func (s *Schedule) dispatchTimedOut() {
 }
 
 func (s *Schedule) String() string {
+	if s.next == utc.Zero {
+		return fmt.Sprintf("schedule[id: %s, at: %v, dat: %v]", s.id,
+			s.details.ScheduledAt,
+			s.details.DispatchedAt)
+	}
 	return fmt.Sprintf("schedule[id: %s, at: %v, dat: %v, next: %v]", s.id,
 		s.details.ScheduledAt,
 		s.details.DispatchedAt,

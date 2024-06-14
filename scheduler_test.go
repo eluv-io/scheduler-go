@@ -299,7 +299,10 @@ func TestReschedule(t *testing.T) {
 			require.Equal(t, 0, len(scheds))
 			return
 		}
-		s.RescheduleAt(utc.Now().Add(delay), fmt.Sprintf("%d", len(receiver.received)))
+		ok := s.RescheduleAt(utc.Now().Add(delay), fmt.Sprintf("%d", len(receiver.received)))
+		require.True(t, ok)
+		ok = s.RescheduleAt(utc.Now().Add(delay))
+		require.False(t, ok)
 	})
 
 	err := sc.Run(schedules)
