@@ -122,7 +122,7 @@ func (s *Scheduler) Add(sc *Schedule) bool {
 	if sc == nil {
 		return false
 	}
-	
+
 	s.runningMu.Lock()
 	defer s.runningMu.Unlock()
 	if !s.running {
@@ -254,6 +254,9 @@ func (s *Scheduler) run(schedules Schedules) error {
 		if err != nil {
 			return err
 		}
+		for _, sc := range schedules {
+			sc.updateDetails()
+		}
 	}
 
 	dumpSchedules := func(replyChan chan []*Schedule) {
@@ -342,6 +345,7 @@ func (s *Scheduler) run(schedules Schedules) error {
 						if entry.next.After(now) || breakSchedules {
 							break
 						}
+
 						dispatched := false
 						switch entry.getState() {
 						case scDispatched:
@@ -396,21 +400,19 @@ func (s *Scheduler) run(schedules Schedules) error {
 							s.overflowed(entry)
 						}
 
-						if !dispatched {
-							s.overflowed(entry)
-						}
-
 						schedules = schedules[1:]
 						if entry.nextTime(now) {
 							schedules = append(schedules, entry)
 							s.logger.Trace("run - reschedule", "schedule_at", now, "id", entry.ID(), "dispatched", dispatched, "next", entry.next)
 						} else {
 							if dispatched {
+								entry.done()
 								s.logger.Trace("run - done", "schedule_at", now, "id", entry.ID(), "dispatched", dispatched)
 							} else {
 								s.logger.Warn("run - dispatch failed", "schedule_at", now, "id", entry.ID(), "dispatched", dispatched)
 							}
 						}
+						entry.updateDetails()
 					}
 
 				case entry := <-s.add:

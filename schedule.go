@@ -1,8 +1,10 @@
 package scheduler
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -59,12 +61,12 @@ const (
 	scDispatched
 	scDelivered
 	scDispatchTimedOut
+	scDone
 )
 
 // Schedule is a planned event.
 type Schedule struct {
 	id          ScheduleID    // ID of the schedule
-	state       *atomic.Int64 // state of the schedule
 	next        utc.UTC       // next time this Schedule must be notified
 	starter     Nexter        // computing 'next' for the first time
 	object      interface{}   // the associated 'thing' that is scheduled
@@ -73,7 +75,10 @@ type Schedule struct {
 	limit       utc.UTC       // limit date or zero if no limit
 	maxDuration time.Duration // limit duration computed on first dispatching
 	scheduler   *Scheduler    // the scheduler for rescheduling or nil
+	state       *atomic.Int64 // state of the schedule
 	details     Details       // details of the Schedule
+	muDetails   sync.Mutex    // protect public details
+	pubDetails  Details       // details made accessible
 }
 
 // Details of Schedule are available for logging or troubleshooting
@@ -104,6 +109,7 @@ func (s *Schedule) start(now utc.UTC) {
 	if s.next.IsZero() && s.nexter != nil {
 		s.next = s.nexter.Next(now, s)
 	}
+	s.updateDetails()
 }
 
 // nextTime returns true if the Schedule must be rescheduled by the scheduler.
@@ -160,6 +166,10 @@ func (s *Schedule) dispatchTimedOut() {
 	s.setState(scDispatchTimedOut)
 }
 
+func (s *Schedule) done() {
+	s.setState(scDone)
+}
+
 func (s *Schedule) String() string {
 	if s.next == utc.Zero {
 		return fmt.Sprintf("schedule[id: %s, at: %v, dat: %v]", s.id,
@@ -170,6 +180,22 @@ func (s *Schedule) String() string {
 		s.details.ScheduledAt,
 		s.details.DispatchedAt,
 		s.next)
+}
+
+func (s *Schedule) MarshalJSON() ([]byte, error) {
+	type sched struct {
+		Id   string  `json:"id"`
+		At   utc.UTC `json:"at"`
+		Dat  utc.UTC `json:"dat"`
+		Next utc.UTC `json:"next"`
+	}
+	js := &sched{
+		Id:   string(s.id),
+		At:   s.details.ScheduledAt,
+		Dat:  s.details.DispatchedAt,
+		Next: s.next,
+	}
+	return json.Marshal(js)
 }
 
 func (s *Schedule) same(o *Schedule) bool {
@@ -214,7 +240,15 @@ func (s *Schedule) Object() interface{} {
 
 // Details returns the 'runtime' Details of the schedule
 func (s *Schedule) Details() Details {
-	return s.details
+	s.muDetails.Lock()
+	defer s.muDetails.Unlock()
+	return s.pubDetails
+}
+
+func (s *Schedule) updateDetails() {
+	s.muDetails.Lock()
+	defer s.muDetails.Unlock()
+	s.pubDetails = s.details
 }
 
 // Str returns the object attached to this Schedule as a string or the empty

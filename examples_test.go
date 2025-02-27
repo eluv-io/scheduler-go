@@ -36,6 +36,7 @@ func ExampleNew() {
 	}(sched)
 
 	in := time.Millisecond * 200
+	// add schedule to scheduler
 	sched.At(utc.Now().Add(in), func() { fmt.Println("fired") })
 	time.Sleep(time.Millisecond * 205)
 
