@@ -85,8 +85,19 @@ type Schedule struct {
 type Details struct {
 	ScheduledAt      utc.UTC `json:"scheduled_at"`                // time the Schedule was scheduled
 	DispatchedAt     utc.UTC `json:"dispatched_at"`               // when the schedule was sent to the notification channel
+	Next             utc.UTC `json:"next"`                        // next scheduled time or utc.Zero
 	DispatchedCount  int     `json:"dispatched_count,omitempty"`  // how many times the schedule was dispatched
 	RescheduledCount int     `json:"rescheduled_count,omitempty"` // how many times the schedule was re-scheduled
+}
+
+func (d Details) copy() Details {
+	return Details{
+		ScheduledAt:      d.ScheduledAt,
+		DispatchedAt:     d.DispatchedAt,
+		Next:             d.Next,
+		DispatchedCount:  d.DispatchedCount,
+		RescheduledCount: d.RescheduledCount,
+	}
 }
 
 func (s *Schedule) S() *Schedule {
@@ -114,39 +125,44 @@ func (s *Schedule) start(now utc.UTC) {
 
 // nextTime returns true if the Schedule must be rescheduled by the scheduler.
 func (s *Schedule) nextTime(now utc.UTC) bool {
-	if s.nexter == nil {
-		s.next = utc.Zero
+	s.next = s.computeNextTime(now)
+	if s.next == utc.Zero {
 		return false
 	}
+	return true
+}
+
+func (s *Schedule) computeNextTime(now utc.UTC) utc.UTC {
+	if s.nexter == nil {
+		return utc.Zero
+	}
 	if s.maxCount > 0 && s.details.DispatchedCount == s.maxCount {
-		s.next = utc.Zero
-		return false
+		return utc.Zero
 	}
 	next := s.nexter.Next(now, s)
 	if next.IsZero() {
-		s.next = utc.Zero
-		return false
+		return utc.Zero
 	}
 	if !s.limit.IsZero() && next.After(s.limit) {
-		s.next = utc.Zero
-		return false
+		return utc.Zero
 	}
-	s.next = next
-	return true
+	return next
 }
 
 func (s *Schedule) dispatching(now utc.UTC, sc *Scheduler) {
 	s.details.ScheduledAt = s.next
+	actualNow := sc.now()
 	if s.details.DispatchedAt.IsZero() && s.maxDuration > 0 {
-		l := now.Add(s.maxDuration)
+		l := actualNow.Add(s.maxDuration)
 		if !s.limit.IsZero() && s.limit.Before(l) {
 			l = s.limit
 		}
 		s.limit = l
 	}
-	s.details.DispatchedAt = now
+	s.details.DispatchedAt = actualNow
 	s.scheduler = sc
 	s.setState(scDispatching)
+	s.updateDetails(s.computeNextTime(now))
 }
 
 func (s *Schedule) dispatchValue() *Schedule {
@@ -245,10 +261,13 @@ func (s *Schedule) Details() Details {
 	return s.pubDetails
 }
 
-func (s *Schedule) updateDetails() {
+func (s *Schedule) updateDetails(next ...utc.UTC) {
 	s.muDetails.Lock()
 	defer s.muDetails.Unlock()
-	s.pubDetails = s.details
+	if len(next) > 0 {
+		s.details.Next = next[0]
+	}
+	s.pubDetails = s.details.copy()
 }
 
 // Str returns the object attached to this Schedule as a string or the empty

@@ -357,7 +357,7 @@ func (s *Scheduler) run(schedules Schedules) error {
 							s.logger.Warn("run: skipping dispatched entry", "schedule_at", now, "id", entry.ID())
 						default:
 							// update schedule & allow calling RescheduleAt
-							entry.dispatching(s.now(), s)
+							entry.dispatching(now, s)
 
 							dispatchTimer := time.NewTimer(s.options.OnChannelFull.MaxWait)
 							s.logger.Trace("dispatching", "id", entry.ID())
