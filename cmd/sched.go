@@ -18,15 +18,15 @@ import (
 )
 
 type Opts struct {
-	In          time.Duration `cmd:"flag,in,delay before starting the command"`
-	At          string        `cmd:"flag,at,UTC date to start the command"`
-	Every       time.Duration `cmd:"flag,every,period to execute the command"`
-	CronSpec    string        `cmd:"flag,cron,cron spec defining the period to execute the command"`
-	During      time.Duration `cmd:"flag,during,period after which to stop executing the command"`
-	Until       string        `cmd:"flag,until,UTC date after which to stop executing the command"`
-	Count       int           `cmd:"flag,count,count of command execution"`
-	NoStopOnErr bool          `cmd:"flag,no-stop-on-error,do not stop execution when the command reports an error"`
-	LogLevel    string        `cmd:"flag,log-level,log level"`
+	In          time.Duration `cmd:"flag,in,delay before starting the command,i"`
+	At          string        `cmd:"flag,at,UTC date to start the command,a"`
+	Every       time.Duration `cmd:"flag,every,period to execute the command,e"`
+	CronSpec    string        `cmd:"flag,cron,cron spec defining the period to execute the command,s"`
+	During      time.Duration `cmd:"flag,during,period after which to stop executing the command,d"`
+	Until       string        `cmd:"flag,until,UTC date after which to stop executing the command,u"`
+	Count       int           `cmd:"flag,count,count of command execution,c"`
+	NoStopOnErr bool          `cmd:"flag,no-stop-on-error,do not stop execution when the command reports an error,n"`
+	LogLevel    string        `cmd:"flag,log-level,log level,l"`
 	Command     []string      `cmd:"arg,command,command and args,0"`
 	logger      *elog.Log
 }

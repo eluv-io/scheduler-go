@@ -1,5 +1,10 @@
 package main
 
+// Generates version information from git and stores in version-info.go
+
+//go:generate echo go generate ./cmd/go-sched
+//go:generate sh -c "\"./generate-version-info.sh\" > \"version-info.go\""
+
 import (
 	"fmt"
 	"os"
@@ -10,12 +15,12 @@ import (
 	"github.com/eluv-io/scheduler-go/cmd"
 )
 
-func goSshVersion() string {
-	return "N/A"
+var schedVersion = func() string {
+	return `N/A - run 'go generate ./cmd/sched'`
 }
 
 func root() (*cobra.Command, error) {
-	ver := goSshVersion()
+	ver := schedVersion()
 
 	root, err := cmd.Command()
 	if err != nil {

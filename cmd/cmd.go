@@ -31,7 +31,8 @@ UTC dates may be specified using one of the following formats:
 			Args: cobra.MinimumNArgs(1),
 			Example: `sched --at 2025-03-02T20:16  --every 1s --during 4s -- ls -l README.md
 sched --in 3s --every 1s --during 4s -- ls -l README.md
-sched --in 2s --every 1s --count 4 -- ls -l README.md`,
+sched --in 2s --every 1s --count 4 -- ls -l README.md
+sched --in 2s --cron "@every 1s" --count 4 --no-stop-on-error  -- ls -l README.mdx`,
 		},
 		func(opts *Opts) error {
 			opts.InitLog()
