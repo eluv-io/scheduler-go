@@ -26,6 +26,8 @@ type Opts struct {
 	Until       string        `cmd:"flag,until,UTC date after which to stop executing the command,u"`
 	Count       int           `cmd:"flag,count,count of command execution,c"`
 	NoStopOnErr bool          `cmd:"flag,no-stop-on-error,do not stop execution when the command reports an error,n"`
+	Async       bool          `cmd:"flag,async,execute command asynchronously,x"`
+	Parallel    int           `cmd:"flag,parallel,limit count of parallel execution with --async (0: no limit),p"`
 	LogLevel    string        `cmd:"flag,log-level,log level,l"`
 	Command     []string      `cmd:"arg,command,command and args,0"`
 	logger      *elog.Log
@@ -53,6 +55,7 @@ func (o *Opts) Sched() (interface{}, error) {
 	e := errors.TemplateNoTrace("sched", errors.K.Invalid.Default())
 
 	opts := scheduler.NewOptions()
+	opts.ChannelSize = 0
 	opts.Logger = o.logger
 
 	sc := scheduler.NewScheduler(opts)
@@ -168,10 +171,33 @@ func (o *Opts) Sched() (interface{}, error) {
 		}
 	}()
 
+	var limiter chan interface{}
+	if o.Async && o.Parallel > 0 {
+		limiter = make(chan interface{}, o.Parallel)
+	}
+
 	wg := sync.WaitGroup{}
 	wg.Add(1)
+
+	var execWg *sync.WaitGroup
+	if o.Async {
+		execWg = &sync.WaitGroup{}
+	}
+
 	go func(sched *scheduler.Scheduler) {
-		defer wg.Done()
+		defer func() {
+			if limiter != nil {
+				o.logger.Debug("waiting all workers return their permit")
+				for i := 0; i < cap(limiter); i++ {
+					limiter <- struct{}{}
+				}
+			}
+			if execWg != nil {
+				o.logger.Debug("waiting all workers done")
+				execWg.Wait()
+			}
+			wg.Done()
+		}()
 		count := 0
 
 	out:
@@ -190,14 +216,47 @@ func (o *Opts) Sched() (interface{}, error) {
 				//	"dispatched at", s.Details().DispatchedAt,
 				//	"next", s.Details().Next)
 
-				// run the command -> ? potentially in a goroutine
-				// go func(s scheduler.Schedule) { s.Fn()() }(s)
-				err = s.FnE()()
-				if err != nil {
-					fmt.Println(err)
-					if !o.NoStopOnErr {
-						_ = sched.Stop()
-						break out
+				switch {
+				case o.Async:
+					switch limiter {
+					case nil:
+					default:
+						select {
+						case limiter <- struct{}{}:
+						default:
+							o.logger.Info("max parallel reached - skipping schedule",
+								"dispatched at", s.Details().DispatchedAt)
+							continue
+						}
+					}
+
+					execWg.Add(1)
+					go func(s *scheduler.Schedule) {
+						defer func() {
+							if limiter != nil {
+								<-limiter
+							}
+							execWg.Done()
+							if stop(0, s.Details()) { // count was already evaluated
+								_ = sched.Stop()
+							}
+						}()
+						err = s.FnE()()
+						if err != nil {
+							_, _ = fmt.Fprintln(os.Stderr,
+								"dispatched at", s.Details().DispatchedAt, err)
+						}
+					}(s)
+
+				default:
+					err = s.FnE()()
+					if err != nil {
+						_, _ = fmt.Fprintln(os.Stderr,
+							"dispatched at", s.Details().DispatchedAt, err)
+						if !o.NoStopOnErr {
+							_ = sched.Stop()
+							break out
+						}
 					}
 				}
 
@@ -207,6 +266,7 @@ func (o *Opts) Sched() (interface{}, error) {
 				}
 			}
 		}
+
 	}(sc)
 	wg.Wait()
 
