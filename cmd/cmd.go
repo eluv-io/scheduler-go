@@ -44,7 +44,7 @@ sched --log-level info --in 2s --every 1s --during 10s --async --parallel 3 -- b
 		},
 		func(opts *Opts) error {
 			opts.InitLog()
-			res, err := opts.Sched()
+			res, err := opts.SchedExec()
 			if err != nil {
 				return err
 			}
